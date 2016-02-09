@@ -3,6 +3,8 @@ namespace dd174\relatedBehavior;
 
 use Exception;
 use yii\base\Behavior;
+use yii\base\Model;
+use yii\bootstrap\Html;
 use yii\db\ActiveRecord;
 use yii\db\Transaction;
 use yii\helpers\ArrayHelper;
@@ -14,7 +16,7 @@ use yii\helpers\ArrayHelper;
 class RelatedBehavior extends Behavior
 {
     /**
-     * @var ActiveRecordRelationSave
+     * @var ActiveRecord
      */
     public $owner;
 
@@ -23,6 +25,12 @@ class RelatedBehavior extends Behavior
      * @var array
      */
     public $relations;
+
+    /**
+     * сценарии для работы с релейшинами, если надо
+     * @var array
+     */
+    public $scenarios = [];
 
     /**
      * удалить связанные объекты при удалении основной модели
@@ -43,11 +51,29 @@ class RelatedBehavior extends Behavior
     private $errors = [];
 
     /**
+     * признак, что не переданные релейшины удалять не надо, т.е. только добавляем новые
+     * @var bool
+     */
+    private $onlyAdd = false;
+
+    /**
+     * новые данные из load
+     * @var array
+     */
+    private $relationNewValue = [];
+
+    /**
+     * заполенный FK для связанных моделей
+     * @var array
+     */
+    private $relationFk = [];
+
+    /**
      * @return array
      */
     public function events()
     {
-        // если не заланы relation которые нужно обновлять, то и делать нечиго не надо
+        // если не заданы relation которые нужно обновлять, то и делать нечиго не надо
         if (!$this->relations) {
             return [];
         }
@@ -84,9 +110,25 @@ class RelatedBehavior extends Behavior
     {
         $this->beforeTransaction();
 
-        $this->relations = [];
-
         $this->mergeRelation(true);
+    }
+
+    public function afterTransaction()
+    {
+        if ($this->hasErrors()) {
+            foreach ($this->relations as $relation) {
+                if ($this->errors[$relation]) {
+                    $this->owner->addErrors($this->errors[$relation]);
+                }
+            }
+        }
+        if ($this->transaction !== null) {
+            if ($this->hasErrors()) {
+                $this->transaction->rollBack();
+            } else {
+                $this->transaction->commit();
+            }
+        }
     }
 
     /**
@@ -96,76 +138,91 @@ class RelatedBehavior extends Behavior
      */
     public function mergeRelation($delete = false)
     {
-        // тут создаем/меняем/удаляем Relation
         foreach ($this->relations as $relation) {
-            if ($delete && $this->deleteCascade) {
-                $this->owner->$relation = [];
-            }
-
-            /* @var ActiveRecord $modelClass */
-            $modelClass = $this->owner->getRelation($relation)->modelClass;
-            /* @var ActiveRecordRelationSave $fake */
-            $fake = new $modelClass();
-            $pk = $fake->getTableSchema()->primaryKey;
-            // @todo Смелый допилит поддержку составных PK. (c)
-            if (count($pk) != 1) {
-                throw new Exception('Invalid PK type.');
-            }
-            $pk = $pk[0];
-
-            if (!is_array($this->owner->$relation)) {
-                continue;
-            }
-
-            $foreignKey = $this->getRelationForeignKeysToBaseModel($fake);
-            // сохраняем связи, только если они были записаны через ActiveRecordRelationSave::_set
-            if (!is_array($this->owner->oldRelationValue[$relation])) {
-                continue;
-            }
-            $delOldRelation = ArrayHelper::map($this->owner->oldRelationValue[$relation], $pk, $pk);
-
-            foreach ($this->owner->$relation as $data) {
-                /* @var ActiveRecord $model */
-                $model = null;
-                if (isset($data[$pk]) && $data[$pk]) {
-                    // если обновляем запись, то значит ее удалять не надо
-                    if (isset($delOldRelation[$data[$pk]])) {
-                        unset($delOldRelation[$data[$pk]]);
+            $modelDelete = [];
+            $modelSave = [];
+            if ($delete && $this->owner->$relation) {
+                $modelDelete = $this->owner->$relation;
+                // обновляем релейшин, если в CurrentValue он явно задан
+            } elseif (key_exists($relation, $this->relationNewValue) && is_array($this->relationNewValue[$relation])) {
+                // находим имя PK
+                $getter = 'get' . $relation;
+                /** @var ActiveRecord $modelClass */
+                $modelClass = $this->owner->$getter()->modelClass;
+                $pk = $modelClass::primaryKey();
+                if (count($pk) > 1) {
+                    throw new Exception('Составные ключи не поддерживаются!');
+                }
+                if (!isset($pk[0])) {
+                    throw new Exception('Ключ не задан');
+                }
+                $pk = $pk[0];
+                foreach ($this->relationNewValue[$relation] as $key => $values) {
+                    $model = null;
+                    // здесь нужно добавить поддержку составных ключей, пример из Yii1
+                    /*
+                    if (is_array($pk)) {
+                        $arrayPk = [];
+                        foreach ($pk as $field) {
+                            $arrayPk[$field] = isset($data[$field]) ? $data[$field] : null;
+                        }
+                        $model = $class::model()->findByAttributes($arrayPk);
                     }
-                    $model = $modelClass::findOne(intval($data[$pk]));
+                    */
+                    if (isset($values[$pk]) && $values[$pk]) {
+                        $model = $modelClass::findOne($values[$pk]);
+                        $model->scenario = ArrayHelper::getValue(
+                            $this->scenarios,
+                            $relation . '.update', Model::SCENARIO_DEFAULT
+                        );
+                    }
+                    if (!$model) {
+                        $config = [];
+                        if (method_exists($modelClass, 'setFormName')) {
+                            $config = ['formName' => $key];
+                        }
+                        $model = new $modelClass($config);
+                        $model->scenario = ArrayHelper::getValue(
+                            $this->scenarios,
+                            $relation . '.create', Model::SCENARIO_DEFAULT
+                        );
+                    }
+                    /** @var ActiveRecord $model */
+                    $model->setAttributes(array_merge($this->getRelationFk($relation), $values));
+                    $modelSave[] = $model;
                 }
 
-                if (!$model) {
-                    $model = new $modelClass();
+                // если не только добавление, но и удаление связанной модели, то сверяем:
+                if (!$this->onlyAdd && $this->owner->$relation) {
+                    foreach ($this->owner->$relation as $oldModel) {
+                        $found = false;
+                        /** @var ActiveRecord $newModel */
+                        foreach ($modelSave as $newKey => $newModel) {
+                            if ($oldModel->primaryKey == $newModel->primaryKey) {
+                                $found = true;
+                                break;
+                            }
+                        }
+                        // Если запись в текущих данных нет, значит ее нужно удалить.
+                        if (!$found) {
+                            $modelDelete[] = $oldModel;
+                        }
+                    }
                 }
+            }
 
-                // если в $data явно указаны FK ключи, то они перебьют значения из $foreignKey
-                $model->setAttributes(array_merge($foreignKey, $data));
+            /** @var ActiveRecord $model */
+            foreach ($modelDelete as $model) {
+                if (!$model->delete()) {
+                    $this->errors[$relation][] = strip_tags(Html::errorSummary($model));
+                }
+            }
+
+            /** @var ActiveRecord $model */
+            foreach ($modelSave as $model) {
                 if (!$model->save()) {
-                    $this->errors[$relation] = $model->getErrors();
+                    $this->errors[$relation][] = strip_tags(Html::errorSummary($model));
                 }
-            }
-
-            if (is_array($delOldRelation)) {
-                foreach ($delOldRelation as $id) {
-                    if (!$model = $modelClass::findOne($id)->delete()) {
-
-                    }
-                }
-            }
-        }
-    }
-
-    public function afterTransaction()
-    {
-        if ($this->hasErrors()) {
-            $this->owner->addErrors($this->errors);
-        }
-        if ($this->transaction !== null) {
-            if ($this->hasErrors()) {
-                $this->transaction->rollBack();
-            } else {
-                $this->transaction->commit();
             }
         }
     }
@@ -180,24 +237,43 @@ class RelatedBehavior extends Behavior
     }
 
     /**
-     * @param ActiveRecordRelationSave $relation
-     * @return array
+     * Заполняет релейшин актуальными данными
+     * @param string $relationName - имя релейшина
+     * @param array $data
+     * @param null $formName
+     * @param bool $onlyAdd - только добавление
      */
-    private function getRelationForeignKeysToBaseModel($relation)
+    public function loadRelation($relationName, array $data, $formName = null, $onlyAdd = false)
     {
-        $fk = [];
-        foreach ($relation->extraFields() as $foreignName) {
-            $getter = 'get' . $foreignName;
-            if (method_exists($relation, $getter)) {
-                if ($this->owner->className() == preg_replace('/(Query)$/', '', $relation->$getter()->className())) {
-                    foreach ($relation->$getter()->link as $column => $field) {
-                        $fk[$field] = $this->owner->$column;
-                    }
+        $this->onlyAdd = (bool)$onlyAdd;
+        if ($formName === null) {
+            $formName = $relationName;
+        }
 
-                }
+        if ($formName === '') {
+            $this->relationNewValue[$relationName] = $data;
+        } elseif (key_exists($formName, $data)) {
+            $this->relationNewValue[$relationName] = $data[$formName];
+        } else {
+            $this->relationNewValue[$relationName] = [];
+        }
+    }
+
+    /**
+     * Значения для заполнения поля FK в связанной моделе
+     * @param $relation
+     * @return mixed
+     */
+    private function getRelationFk($relation)
+    {
+        if (!isset($this->relationFk[$relation])) {
+            $this->relationFk[$relation] = [];
+            $getter = 'get' . $relation;
+            foreach ($this->owner->$getter()->link as $fk => $id) {
+                $this->relationFk[$relation][$fk] = $this->owner->$id; // получаем ID теущей модели
             }
         }
 
-        return $fk;
+        return $this->relationFk[$relation];
     }
 }
