@@ -18,13 +18,7 @@ php composer.phar require dd174/yii2-related-behavior "dev-master"
 Usage
 -----
 
-```
-use dd174\relatedBehavior\ActiveRecordRelationSave;
-
-class Model extends ActiveRecordRelationSave
-```
-
-add in Model behavior
+in Model behavior
 
 ```
     public function behaviors()
@@ -35,11 +29,50 @@ add in Model behavior
                 ...
                 [
                     'class' => RelatedBehavior::class,
-                    'relations' => [
-                        'relatedName',
-                    ],
+                    'relations' => ['relatedName'],
+                    // optional:
+                    'scenarios' => ['relatedName' => ['create' => 'create', 'update' => 'update']],
                 ],
 ```
+
+in Controller
+
+```
+$model->loadRelation('relatedName', Yii::$app->request->post(), 'keyPost');
+```
+
+Tips
+------------
+
+in related Model unique formName
+
+```
+private $formName;
+
+/**
+ * @param null $unique необходим для получения доступа к файлам ($_FILES) в новой моделе
+ */
+public function setFormName($unique = null)
+{
+	$unique = $unique ?: ($this->primaryKey ?: uniqid('new', true));
+	$this->formName = parent::formName() . '[' . $unique . ']';
+}
+
+/**
+ * Составляем свое name, что бы легко использовать на одной странице форму с несколькими экземплярами этой модели
+ * @return string
+ */
+public function formName()
+{
+	if (!$this->formName) {
+		$this->setFormName();
+	}
+
+	return $this->formName;
+}
+```
+
+
 
 Credits
 -------
