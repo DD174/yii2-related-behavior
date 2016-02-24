@@ -94,7 +94,7 @@ class RelatedBehavior extends Behavior
 
     public function beforeTransaction()
     {
-        if (!$this->transaction = $this->owner->getDb()->getTransaction()) {
+        if (!isset($this->owner->getDb()->transaction->isActive))  {
             $this->transaction = $this->owner->getDb()->beginTransaction();
         }
     }
@@ -109,7 +109,7 @@ class RelatedBehavior extends Behavior
     public function beforeDelete()
     {
         $this->beforeTransaction();
-
+    
         $this->mergeRelation(true);
     }
 
@@ -150,31 +150,18 @@ class RelatedBehavior extends Behavior
                 /** @var ActiveRecord $modelClass */
                 $modelClass = $this->owner->$getter()->modelClass;
                 $pk = $modelClass::primaryKey();
-                if (count($pk) > 1) {
-                    throw new Exception('Составные ключи не поддерживаются!');
-                }
                 if (!isset($pk[0])) {
                     throw new Exception('Ключ не задан');
                 }
-                $pk = $pk[0];
                 foreach ($this->relationNewValue[$relation] as $key => $values) {
                     $model = null;
-                    // здесь нужно добавить поддержку составных ключей, пример из Yii1
-                    /*
-                    if (is_array($pk)) {
-                        $arrayPk = [];
-                        foreach ($pk as $field) {
-                            $arrayPk[$field] = isset($data[$field]) ? $data[$field] : null;
-                        }
-                        $model = $class::model()->findByAttributes($arrayPk);
+                    $arrayPk = [];
+                    foreach ($pk as $field) {
+                        $arrayPk[$field] = isset($values[$field]) ? $values[$field] : null;
                     }
-                    */
-                    if (isset($values[$pk]) && $values[$pk]) {
-                        $model = $modelClass::findOne($values[$pk]);
-                        $model->scenario = ArrayHelper::getValue(
-                            $this->scenarios,
-                            $relation . '.update', Model::SCENARIO_DEFAULT
-                        );
+                    $model = $modelClass::findOne([$arrayPk]);
+                    if (isset($this->scenarios[$relation]['update'])) {
+                        $model->scenario = $this->scenarios[$relation]['update'];
                     }
                     if (!$model) {
                         $config = [];
