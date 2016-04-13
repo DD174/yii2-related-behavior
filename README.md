@@ -12,7 +12,7 @@ The preferred way to install this extension is through [composer](http://getcomp
 Either run
 
 ```
-php composer.phar require dd174/yii2-related-behavior "dev-master"
+php composer require dd174/yii2-related-behavior
 ```
 
 Usage
