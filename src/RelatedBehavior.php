@@ -160,7 +160,7 @@ class RelatedBehavior extends Behavior
                         $arrayPk[$field] = isset($values[$field]) ? $values[$field] : null;
                     }
                     $model = $modelClass::findOne([$arrayPk]);
-                    if (isset($this->scenarios[$relation]['update'])) {
+                    if ($model && isset($this->scenarios[$relation]['update'])) {
                         $model->scenario = $this->scenarios[$relation]['update'];
                     }
                     if (!$model) {
