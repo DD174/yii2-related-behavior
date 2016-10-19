@@ -40,6 +40,12 @@ class RelatedBehavior extends Behavior
     public $deleteCascade = true;
 
     /**
+     * Добавлять ошибки в модель в owner
+     * @var bool
+     */
+    public $ownerAddErrors = true;
+
+    /**
      * @var Transaction
      */
     private $transaction;
@@ -49,6 +55,14 @@ class RelatedBehavior extends Behavior
      * @var array
      */
     private $errors = [];
+
+    /**
+     * Все модели из relation, да же те которые удалили.
+     * Используется в случае если были ошибки и надо восстановить форму
+     * ['relationName' => [Model, Model]]
+     * @var array
+     */
+    private $relationModels = [];
 
     /**
      * признак, что не переданные релейшины удалять не надо, т.е. только добавляем новые
@@ -94,9 +108,9 @@ class RelatedBehavior extends Behavior
 
     public function beforeTransaction()
     {
-        if (!isset($this->owner->getDb()->transaction->isActive))  {
+//        if (!isset($this->owner->getDb()->transaction->isActive))  {
             $this->transaction = $this->owner->getDb()->beginTransaction();
-        }
+//        }
     }
 
     public function afterSave()
@@ -116,10 +130,14 @@ class RelatedBehavior extends Behavior
     public function afterTransaction()
     {
         if ($this->hasErrors()) {
-            foreach ($this->relations as $relation) {
-                if ($this->errors[$relation]) {
-                    $this->owner->addErrors($this->errors[$relation]);
+            if ($this->ownerAddErrors) {
+                foreach ($this->relations as $relation) {
+                    if ($this->errors[$relation]) {
+                        $this->owner->addErrors($this->errors[$relation]);
+                    }
                 }
+            } else {
+                $this->owner->addError('ALL', 'error'); // что бы работал owner->hasErrors
             }
         }
         if ($this->transaction !== null) {
@@ -139,6 +157,7 @@ class RelatedBehavior extends Behavior
     public function mergeRelation($delete = false)
     {
         foreach ($this->relations as $relation) {
+            $this->relationModels[$relation] = [];
             $modelDelete = [];
             $modelSave = [];
             if ($delete && $this->owner->$relation) {
@@ -203,6 +222,7 @@ class RelatedBehavior extends Behavior
                 if (!$model->delete()) {
                     $this->errors[$relation][] = strip_tags(Html::errorSummary($model));
                 }
+                $this->relationModels[$relation][] = $model;
             }
 
             /** @var ActiveRecord $model */
@@ -210,6 +230,7 @@ class RelatedBehavior extends Behavior
                 if (!$model->save()) {
                     $this->errors[$relation][] = strip_tags(Html::errorSummary($model));
                 }
+                $this->relationModels[$relation][] = $model;
             }
         }
     }
@@ -243,6 +264,24 @@ class RelatedBehavior extends Behavior
             $this->relationNewValue[$relationName] = $data[$formName];
         } else {
             $this->relationNewValue[$relationName] = [];
+        }
+    }
+
+    /**
+     * @param string|null $relationName
+     * @return ActiveRecord[]|array
+     */
+    public function getRelationModels($relationName = null)
+    {
+        if ($relationName !== null) {
+            return isset($this->relationModels[$relationName]) ? $this->relationModels[$relationName] : [];
+        } else {
+            $arModels = [];
+            foreach ($this->relationModels as $models) {
+                $arModels = array_merge($arModels, $models);
+            }
+
+            return $arModels;
         }
     }
 
