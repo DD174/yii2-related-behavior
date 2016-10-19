@@ -3,7 +3,7 @@
     "description": "",
     "keywords": ["yii2", "activerecord", "related", "behavior"],
     "type": "yii2-extension",
-    "minimum-stability": "stable",
+    "minimum-stability": "dev",
     "license": "BSD-3-Clause",
     "authors": [
         {
